@@ -1,0 +1,140 @@
+import mne
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+import regex as reg
+from sklearn.pipeline import Pipeline
+from pyriemann.estimation import Covariances
+from pyriemann.tangentspace import TangentSpace
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, classification_report
+import mne
+import numpy as np
+from scipy.stats import iqr
+import warnings
+
+mne.set_log_level('ERROR')   # silence MNE
+
+warnings.filterwarnings("ignore")  # silence warnings
+
+new_latest = ['E24', 'E124', 'E36', 'E104', 'E47','E52', ' E60', 'E67', 'E67', 'E72', 'E77', 'E85', 'E92', 'E98', 'E62','E70', 'E75', 'E83','E58','E96','E90','E65','E69','E74','E82','E89'
+              ]
+bad_channels = ['E17', 'E38', 'E94', 'E113', 'E119', 'E121', 'E125', 'E128', 'E73', 'E81', 'E88', 'E43', 'E44', 'E120', 'E114','E127', 'E126',
+                 'E68', 'E23', 'E3','E49','E48', "E8", "E25",
+     "E56", "E63", "E99", "E107"]
+
+
+
+
+#label_dict = {'OBBA': 0, 'OBBY': 1, 'OBDO': 2, 'OBMO': 3, 'OBSI':4}
+label_dict = {'OBBA': 0,'OBDO': 1,'OBSI':2 } # banana, dog, sitar
+directions = ['OBBA', 'OBDO', 'OBSI']
+
+#directions = ['OBBA', 'OBBY', 'OBDO', 'OBDO','OBSI']  # Left, Right, Up, Down
+
+channel_tuple = (new_latest, bad_channels)
+
+
+from utils.processing_pipeline import preprocessing_pipeline
+
+
+import os
+
+# Point this to the parent "Data" directory
+base_dir = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/Data"
+
+subject_dirs = {}
+
+# 1. Get all items in the Data folder
+# 2. Filter for directories that start with 'S'
+sub_folders = [f for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f)) and f.startswith('S')]
+
+for folder in sub_folders:
+    folder_path = os.path.join(base_dir, folder)
+    files = []
+    
+    # List all .mff files within each subject's folder
+    for file_name in os.listdir(folder_path):
+        if not file_name.startswith('.') and file_name.endswith('.mff'):
+            files.append(file_name)
+    
+    # Using the actual folder name (e.g., 'S1', 'S113') as the key
+    subject_dirs[folder] = files
+
+# Verification
+print(f"Found {len(subject_dirs)} subjects.")
+print("Subjects identified:", list(subject_dirs.keys()))
+
+
+total_data = {}
+test_data = {}
+#base_dir = r'D:\0001_AK\KRISHNA\001_EEG_work_recent\extracted_files'
+base_dir = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/Data"
+
+for subject, files in subject_dirs.items(): # subject is id, files are the all the files associated with a subject
+    print(f"Processing {subject}")
+    
+    total_data[f"{subject}"] = {} #?
+    test_data[f"{subject}"] = {}
+    signals = [] #?
+    labels = []#?
+    signals_test = []
+    labels_test = []
+    k = 0
+    for file_name in files:
+        k +=1
+        file_path = os.path.join(base_dir,subject, file_name) # grabbing file path, the mff file?
+        
+        if not file_name.endswith('.mff'):
+            print(f"Skipping non-raw file: {file_name}")
+            continue
+        
+        required_parts = ["signal1.bin", "info1.xml"]
+        missing_parts = [p for p in required_parts if not os.path.exists(os.path.join(file_path, p))] # wha tis happenign here?
+        if missing_parts:
+            print(f"Skipping {file_name} due to parts being missing")
+            continue
+        
+        print(f"File is intact: {file_name}\n Beginning extraction...")
+        
+        try:
+            processor = preprocessing_pipeline(file_path, *channel_tuple)
+            # trial_data is now a dict: {'BA': [(win, lab), (win, lab), (win, lab)], ...}
+            trial_data = processor.extracting_data()
+
+            if k == 2:
+                print(f"Splitting Block {k} into Training and Test...")
+                for cls, trials in trial_data.items():
+                    # 1. Take the LAST trial (image event) for Testing
+                    test_trial_x, test_trial_y = trials.pop() 
+                    signals_test.append(test_trial_x)
+                    labels_test.append(test_trial_y)
+                    
+                    # 2. Put the REMAINING trials from this block into Training
+                    for x, y in trials:
+                        signals.append(x)
+                        labels.append(y)
+            else:
+                # For Block 1 or 3, just put everything into Training
+                for cls, trials in trial_data.items():
+                    for x, y in trials:
+                        signals.append(x)
+                        labels.append(y)
+
+        except Exception as e:
+            print(f"Error processing {file_name}: {e}")
+            continue
+
+    
+    total_data[f"{subject}"]['data'] = np.concatenate(signals, axis=0)
+    total_data[f"{subject}"]['labels'] = np.concatenate(labels, axis=0)   
+    
+    test_data[f"{subject}"]['data'] = np.concatenate(signals_test, axis=0)
+    test_data[f"{subject}"]['labels'] = np.concatenate(labels_test, axis=0)  
+
+    
+
+
