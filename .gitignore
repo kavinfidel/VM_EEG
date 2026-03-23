@@ -1,5 +1,14 @@
-*DATA/**
+*Data copy/**
 *.png
 *.json
 *.numbers
 *.txt
+/home/kavinfidel/projects/VM_EEG/utils/__pycache__
+/.venv
+
+*Data/
+*Data 11-15-19-255/
+*.zip
+models/__pycache__
+utils/__pycache__
+/__MACOSX

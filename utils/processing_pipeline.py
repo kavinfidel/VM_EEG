@@ -3,11 +3,11 @@ import os
 import mne
 import numpy as np
 from scipy.stats import iqr
-
+label_dict = {'OBBA': 0,'OBDO': 1,'OBSI':2 } # banana, dog, sitar
 class preprocessing_pipeline:
     def __init__(self, filename, *channel_tuple, 
-                 l_freq=8.0, h_freq=30.0, notch_freq=50.0, fs=500.0, time_window=1.0,
-                 apply_ica=True, remove_muscle=True,
+                 l_freq=8.0, h_freq=24.0, notch_freq=50.0, fs=500.0, time_window=0.5,
+                 apply_ica=True, remove_muscle=False,
                  eog_vertical_chs=('E14', 'E21'), eog_horizontal_chs=('E1', 'E32')):
         
         self.filename = filename
@@ -40,6 +40,7 @@ class preprocessing_pipeline:
         if self.bad_channels:
             raw.drop_channels([ch for ch in self.bad_channels if ch in raw.ch_names])
 
+  
 
         # Filter BEFORE ICA (ICA needs broadband signal to detect artifacts)
         # Use 1Hz high-pass for ICA fitting even if analysis band is higher
@@ -98,12 +99,12 @@ class preprocessing_pipeline:
         bad_components = []
 
         if 'EOG_vertical' in raw.ch_names:
-            idx, _ = ica.find_bads_eog(raw, ch_name='EOG_vertical', threshold=1.5)
+            idx, _ = ica.find_bads_eog(raw, ch_name='EOG_vertical', threshold=2.3)
             print(f"  Vertical EOG (blinks): {idx}")
             bad_components.extend(idx)
 
         if 'EOG_horizontal' in raw.ch_names:
-            idx, _ = ica.find_bads_eog(raw, ch_name='EOG_horizontal', threshold=1.5)
+            idx, _ = ica.find_bads_eog(raw, ch_name='EOG_horizontal', threshold=2.3)
             print(f"  Horizontal EOG (saccades): {idx}")
             bad_components.extend(idx)
 
@@ -128,7 +129,7 @@ class preprocessing_pipeline:
 
         print(f"  ✅ ICA done. Final channel count: {len(raw_eeg_clean.ch_names)}")
         return raw_eeg_clean  # Pure EEG, proxies never re-added
-    
+
     def baseline_stats(self):
         """Extract baseline statistics."""
 
@@ -136,6 +137,10 @@ class preprocessing_pipeline:
             tmin = [ann['onset'] for ann in self.annotations if ann['description'] == 'BLCS'][0]
             tmax = [ann['onset'] for ann in self.annotations if ann['description'] == 'BLCE'][0]
 
+            if not tmin or not tmax:
+                tmin = [ann['onset'] for ann in self.annotations if ann['description'] == 'BSST'][0]
+                tmax = [ann['onset'] for ann in self.annotations if ann['description'] == 'BSEN'][0]
+            
             baseline_raw = self.raw.copy().crop(tmin = tmin, tmax = tmax)
             baseline_data = baseline_raw.get_data(picks = 'eeg')
 
@@ -148,7 +153,8 @@ class preprocessing_pipeline:
             print(f"No baseline beta:{e}")
             return 0, 1
         
-    def extracting_data(self, start_offset=0.0, end_offset=0.0, overlap_factor=0.7, normalize = True):
+
+    def extracting_data(self, start_offset=0.2, end_offset=0.1, overlap_factor=0.7, normalize = True):
         base_mean, base_std = self.baseline_stats()
         
         #classes = ['BA', 'BY', 'DO', 'MO', 'SI']
@@ -157,8 +163,8 @@ class preprocessing_pipeline:
         trial_groups = {cls: [] for cls in classes} 
 
         for cls in classes:
-            starts = [ann['onset'] for ann in self.annotations if ann['description'] == f'OS{cls}']
-            ends   = [ann['onset'] for ann in self.annotations if ann['description'] == f'OE{cls}']
+            starts = [ann['onset'] for ann in self.annotations if ann['description'] == f'IS{cls}']
+            ends   = [ann['onset'] for ann in self.annotations if ann['description'] == f'IE{cls}']
 
             for start, end in zip(starts, ends):
                 segment = self.raw.copy().crop(tmin=start+start_offset, tmax=end+end_offset)
@@ -180,7 +186,7 @@ class preprocessing_pipeline:
                 if this_trial_windows:
                     # Store as a tuple: (Array of Windows, Label)
                     X_windows = np.stack(this_trial_windows, axis=0)
-                    y_windows = np.full(X_windows.shape[0], label_dict[f'OB{cls}'])
+                    y_windows = np.full(X_windows.shape[0], label_dict[f'IM{cls}'])
                     trial_groups[cls].append((X_windows, y_windows))
 
         return trial_groups
