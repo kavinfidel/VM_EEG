@@ -3,7 +3,6 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
-import regex as reg
 from sklearn.pipeline import Pipeline
 from pyriemann.estimation import Covariances
 from pyriemann.tangentspace import TangentSpace
@@ -15,6 +14,8 @@ import mne
 import numpy as np
 from scipy.stats import iqr
 import warnings
+from utils.train_loop import train_riemannian_gnn
+from utils.test_loop import evaluate_riemannian_gnn
 
 mne.set_log_level('ERROR')   # silence MNE
 
@@ -136,5 +137,7 @@ for subject, files in subject_dirs.items(): # subject is id, files are the all t
     test_data[f"{subject}"]['labels'] = np.concatenate(labels_test, axis=0)  
 
     
-
-
+for subject in subject_dirs.items():
+    model, test_loader = train_riemannian_gnn(total_data, test_data, subject)
+    y_true, y_pred = evaluate_riemannian_gnn(model, test_loader, device)
+    

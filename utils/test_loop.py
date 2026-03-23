@@ -29,8 +29,11 @@ import matplotlib.pyplot as plt
 
 def evaluate_riemannian_gnn(model, test_loader, device, class_names=['BA', 'DO', 'SI'],weight = 'best_model.pt'):
     #model = torch.load(best_model)
-    state_dict = torch.load(weight, map_location=device)
-    model.load_state_dict(state_dict)
+
+    if weight:
+        state_dict = torch.load(weight, map_location=device)
+        model.load_state_dict(state_dict)
+   
     model.to(device)
     model.eval()
     all_preds = []

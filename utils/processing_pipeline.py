@@ -6,7 +6,7 @@ from scipy.stats import iqr
 label_dict = {'OBBA': 0,'OBDO': 1,'OBSI':2 } # banana, dog, sitar
 class preprocessing_pipeline:
     def __init__(self, filename, *channel_tuple, 
-                 l_freq=8.0, h_freq=24.0, notch_freq=50.0, fs=500.0, time_window=0.5,
+                 l_freq=8.0, h_freq=56.0, notch_freq=50.0, fs=500.0, time_window=0.5,
                  apply_ica=True, remove_muscle=False,
                  eog_vertical_chs=('E14', 'E21'), eog_horizontal_chs=('E1', 'E32')):
         
@@ -138,6 +138,7 @@ class preprocessing_pipeline:
             tmax = [ann['onset'] for ann in self.annotations if ann['description'] == 'BLCE'][0]
 
             if not tmin or not tmax:
+                print("innner if activated")
                 tmin = [ann['onset'] for ann in self.annotations if ann['description'] == 'BSST'][0]
                 tmax = [ann['onset'] for ann in self.annotations if ann['description'] == 'BSEN'][0]
             
@@ -163,8 +164,8 @@ class preprocessing_pipeline:
         trial_groups = {cls: [] for cls in classes} 
 
         for cls in classes:
-            starts = [ann['onset'] for ann in self.annotations if ann['description'] == f'IS{cls}']
-            ends   = [ann['onset'] for ann in self.annotations if ann['description'] == f'IE{cls}']
+            starts = [ann['onset'] for ann in self.annotations if ann['description'] == f'OS{cls}']
+            ends   = [ann['onset'] for ann in self.annotations if ann['description'] == f'OE{cls}']
 
             for start, end in zip(starts, ends):
                 segment = self.raw.copy().crop(tmin=start+start_offset, tmax=end+end_offset)
@@ -186,7 +187,7 @@ class preprocessing_pipeline:
                 if this_trial_windows:
                     # Store as a tuple: (Array of Windows, Label)
                     X_windows = np.stack(this_trial_windows, axis=0)
-                    y_windows = np.full(X_windows.shape[0], label_dict[f'IM{cls}'])
+                    y_windows = np.full(X_windows.shape[0], label_dict[f'OB{cls}'])
                     trial_groups[cls].append((X_windows, y_windows))
 
         return trial_groups
