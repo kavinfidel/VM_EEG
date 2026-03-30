@@ -9,7 +9,7 @@ from sklearn.model_selection import StratifiedKFold
 from torch_geometric.data import Data
 from models.RiemannianGAT import RiemannianGAT
 from torch_geometric.loader import DataLoader
-
+from sklearn.preprocessing import StandardScaler
 def prepare_dataloaders(X, y, batch_size=16, split_ratio=0.8):
     import torch
     from torch.utils.data import TensorDataset, DataLoader, random_split
@@ -48,6 +48,8 @@ def convert_to_graph_list(X_data, y_labels, threshold=0.3):
         # x: Use the covariance rows as node features (118 nodes, 118 features each)
         # This captures how each node relates to every other node geometrically.
         x = torch.tensor(covariances[i], dtype=torch.float32)
+        scaler = StandardScaler()
+        x = scaler.fit_transform(x)
         
         # edge_index: Define connectivity based on covariance strength
         adj = np.abs(covariances[i])

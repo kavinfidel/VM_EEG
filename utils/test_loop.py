@@ -27,7 +27,7 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 import matplotlib.pyplot as plt
 
 
-def evaluate_riemannian_gnn(model, test_loader, device, class_names=['BA', 'DO', 'SI'],weight = 'best_model.pt'):
+def evaluate_riemannian_gnn(model, test_loader, device, class_names=['BA', 'BY', 'SI'],weight = 'best_model.pt'):
     #model = torch.load(best_model)
 
     if weight:

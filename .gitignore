@@ -12,3 +12,9 @@
 models/__pycache__
 utils/__pycache__
 /__MACOSX
+*pkl
+*data_2/
+
+*.pth
+*.pdf
+*.csv

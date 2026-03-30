@@ -71,7 +71,7 @@ def train_model(model, train_dl, val_dl, criterion, optimizer, scheduler, device
     print(f" Best model saved to: {save_path}")
 
 
-def train_riemannian_gnn(train_dict, test_dict, subject, epochs=100, batch_size=32):
+def train_riemannian_gnn(train_dict, test_dict, subject, epochs=1000, batch_size=16):
     # Setup Device
     device = torch.device(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"--- Training Subject: {subject} on {device} ---")
@@ -142,7 +142,7 @@ def train_riemannian_gnn(train_dict, test_dict, subject, epochs=100, batch_size=
 
     return model, test_loader
 
-def train_loso_riemannian_gnn(train_dict, test_dict, test_sub, epochs=100, batch_size=32):
+def train_loso_riemannian_gnn(train_dict, test_dict, test_sub, epochs=100, batch_size=16):
     # Setup Device
     device = torch.device(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"--- Testing Subject: {test_sub} on {device} ---")

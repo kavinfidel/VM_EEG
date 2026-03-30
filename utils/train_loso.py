@@ -13,13 +13,13 @@ from models.RiemannianGAT import RiemannianGAT
 from torch_geometric.loader import DataLoader
 
 
-def train_loso_riemannian_gnn(train_dict, test_dict, test_sub, epochs=100, batch_size=32):
+def train_loso_riemannian_gnn(train_dict, test_dict, test_sub, epochs=1000, batch_size=8):
     # Setup Device
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device("cpu")
     print(f"--- Testing Subject: {test_sub} on {device} ---")
-    sub_list = ['S116', 'S118', 'S5', 'S2', 'S119', 'S117', 'S3', 'S4', 'S2_', 'S1_', 'S1', 'S6', 'S115', 'S113', 'S114']
-    sub_list.remove(test_sub)
 
+    sub_list = ['S116', 'S118', 'S119', 'S117', 'S2_', 'S1_', 'S115', 'S113', 'S114']
+    sub_list.remove(test_sub)
     
     # 1. Data Prep & Validation Split
     # Since you have small data, we split the train_dict further to get a validation set
@@ -52,7 +52,7 @@ def train_loso_riemannian_gnn(train_dict, test_dict, test_sub, epochs=100, batch
     test_loader = DataLoader(test_graphs, batch_size=batch_size, shuffle=False)
 
     # 2. Initialize Model
-    model = RiemannianGAT(in_channels=100, hidden_channels=64, out_channels=3).to(device)
+    model = RiemannianGAT(in_channels=29, hidden_channels=64, out_channels=3).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4) # Added weight decay for small data
     criterion = torch.nn.CrossEntropyLoss()
 

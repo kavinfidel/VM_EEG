@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_mean_pool, global_max_pool
 
 class RiemannianGAT(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, heads=4):
@@ -23,7 +23,7 @@ class RiemannianGAT(nn.Module):
         x = F.elu(self.conv2(x, edge_index, edge_attr))
         
         # Global Pooling: Collapse 118 nodes into 1 graph representation
-        x = global_mean_pool(x, batch) 
+        x = global_max_pool(x, batch) 
         
         x = self.post_conv(x)
         return self.classifier(x)
