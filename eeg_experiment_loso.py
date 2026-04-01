@@ -79,7 +79,7 @@ class ExperimentConfig:
     })
 
     # ── Normalisation ─────────────────────────────────────────────────────────
-    normalize: bool = False
+    normalize: bool = True
 
     # ── Classifiers to run ───────────────────────────────────────────────────
     # Options: 'logreg', 'svm', 'xgboost', 'mlp'
@@ -220,7 +220,7 @@ class PreprocessingPipeline:
 
     def baseline_stats(self):
         baseline_data = None
-        for start_m, end_m in [('BLOS', 'BLOE'), ('BSST', 'BSEN')]:
+        for start_m, end_m in [('BLCS', 'BLCE'), ('BSST', 'BSEN')]:
             try:
                 tmin = next(a['onset'] for a in self.annotations if a['description'] == start_m)
                 tmax = next(a['onset'] for a in self.annotations if a['description'] == end_m)
@@ -392,20 +392,21 @@ def evaluate_all(train_dict, config: ExperimentConfig):
         print(f"\n{'─'*50}\nClassifier: {clf_type.upper()}\n{'─'*50}")
         acc_results = {}
         all_subjects = list(train_dict.keys())
+        
 
         for test_subject in all_subjects:
             print(f"\n-- Running LOSO: Testing on {test_subject}")
             test_dict = {test_subject: train_dict[test_subject]}
 
-            train_dict = {s: train_dict[s] for s in all_subjects if s!= test_subject}
-            X_train = np.concatenate([train_dict[sub]['data'] for sub in train_dict], axis=0)
-            y_train = np.concatenate([train_dict[sub]['labels'] for sub in train_dict], axis=0)
+            train_dict_new = {s: train_dict[s] for s in all_subjects if s!= test_subject}
+            X_train = np.concatenate([train_dict_new[sub]['data'] for sub in train_dict_new], axis=0)
+            y_train = np.concatenate([train_dict_new[sub]['labels'] for sub in train_dict_new], axis=0)
 
             X_test = test_dict[test_subject]['data']
             y_test  = test_dict[test_subject]['labels']
 
         
-            print(f"  {test_subject} — train {len(X_train)} | test {len(X_test)}")
+            print(f"  — train {len(X_train)} | test {len(X_test)}")
 
             y_pred = riemannian_predict(X_train, y_train, X_test, clf_type, config)
             acc = accuracy_score(y_test, y_pred)

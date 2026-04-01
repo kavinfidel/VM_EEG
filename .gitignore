@@ -18,3 +18,9 @@ utils/__pycache__
 *.pth
 *.pdf
 *.csv
+*.pyc
+*__pycache__
+__pycache__/eeg_experiment_loso.cpython-310.pyc
+__pycache__
+__pycache__/eeg_experiment_loso.cpython-310.pyc
+__pycache__/eeg_experiment_loso.cpython-310.pyc

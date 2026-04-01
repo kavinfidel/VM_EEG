@@ -73,9 +73,9 @@ class ExperimentConfig:
     ])
 
     # ── Task / labels ─────────────────────────────────────────────────────────
-    classes: List[str] = field(default_factory=lambda: ['BA', 'BY', 'SI'])
+    classes: List[str] = field(default_factory=lambda: ['BA', 'BY', 'DO', 'MO', 'SI'])
     label_dict: Dict[str, int] = field(default_factory=lambda: {
-        'IMBA': 0, 'IMBY': 1, 'IMSI': 2
+        'IMBA': 0, 'IMBY': 1, 'IMDO': 2, 'IMMO':3, 'IMSI': 4
     })
 
     # ── Normalisation ─────────────────────────────────────────────────────────
@@ -118,14 +118,15 @@ class ExperimentConfig:
 cfg = ExperimentConfig(
     time_window=0.5,
     overlap_factor=0.75,
-    l_freq=10.0,
-    h_freq=80.0,
+    l_freq=5.0,
+    h_freq=30.0,
     apply_ica=True,
     classifiers=['logreg', 'svm'],
     cov_estimator='oas',
     ts_metric='riemann',
-)
 
+)
+# 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Preprocessing pipeline
@@ -394,7 +395,7 @@ def riemannian_predict(X_train, y_train, X_test, clf_type: str, config: Experime
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Evaluation
+# Evaluation 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate_all(train_dict, test_dict, config: ExperimentConfig):
