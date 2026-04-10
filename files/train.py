@@ -5,7 +5,8 @@ Subject-specific training loop with:
   - K-fold cross-validation (stratified)
   - Early stopping on validation loss
   - Learning rate scheduling (OneCycleLR)
-  - Returns per-fold and aggregate metrics
+  - tqdm progress bars: one bar per epoch, one bar per fold/subject
+  - MPS / CUDA / CPU device resolution
 
 Metrics returned:
   accuracy, balanced_accuracy, kappa (Cohen's κ),
@@ -19,6 +20,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
+from tqdm.auto import tqdm
 
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
@@ -37,6 +39,25 @@ from models import EEGGraphNet
 from dataset import EEGGraphDataset
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Device resolution — CUDA > MPS > CPU
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve_device(device: Optional[str] = None) -> str:
+    """
+    Returns the best available device if device=None.
+    Priority: CUDA > MPS (Apple Silicon) > CPU.
+
+    You can force a backend by passing device='cpu', 'cuda', or 'mps'.
+    In GNNConfig set device='mps' to use Apple Silicon GPU.
+    """
+    if device is not None:
+        return device
+    if torch.cuda.is_available():
+        return 'cuda'
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return 'mps'
+    return 'cpu'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,24 +84,27 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_one_fold(
-    train_graphs: list[Data],
-    val_graphs:   list[Data],
-    model_kwargs: dict,
-    n_classes:    int,
-    epochs:       int = 100,
-    batch_size:   int = 32,
-    lr:           float = 1e-3,
-    weight_decay: float = 1e-4,
-    patience:     int = 20,
-    device:       Optional[str] = None,
+    train_graphs:  list[Data],
+    val_graphs:    list[Data],
+    model_kwargs:  dict,
+    n_classes:     int,
+    epochs:        int = 100,
+    batch_size:    int = 32,
+    lr:            float = 1e-3,
+    weight_decay:  float = 1e-4,
+    patience:      int = 20,
+    device:        Optional[str] = None,
     class_weights: Optional[torch.Tensor] = None,
-    verbose:      bool = False,
+    verbose:       bool = True,
+    pbar_desc:     str = 'Training',
 ) -> tuple[EEGGraphNet, dict, dict]:
     """
     Train for one fold. Returns (model, train_metrics, val_metrics).
+
+    A tqdm bar runs every epoch showing tr_loss / vl_loss / vl_acc / patience.
+    Early-stop information is always printed via tqdm.write (won't break bars).
     """
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = resolve_device(device)
 
     train_ds = EEGGraphDataset(train_graphs)
     val_ds   = EEGGraphDataset(val_graphs)
@@ -103,15 +127,25 @@ def train_one_fold(
         epochs=epochs, pct_start=0.1,
     )
 
-    best_val_loss = float('inf')
+    best_val_loss    = float('inf')
     patience_counter = 0
-    best_state = None
+    best_state       = None
+    stopped_epoch    = epochs
 
-    for epoch in range(1, epochs + 1):
-        # ── train ──
+    epoch_bar = tqdm(
+        range(1, epochs + 1),
+        desc=pbar_desc,
+        unit='ep',
+        dynamic_ncols=True,
+        leave=False,       # collapses after done so fold/subject bars stay clean
+    )
+
+    for epoch in epoch_bar:
+        # ── train ──────────────────────────────────────────────────────────
         model.train()
+        train_loss = 0.0
         for batch in train_loader:
-            batch = batch.to(device)
+            batch  = batch.to(device)
             logits = model(batch)
             loss   = criterion(logits, batch.y)
             optimizer.zero_grad()
@@ -119,8 +153,11 @@ def train_one_fold(
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
+            train_loss += loss.item() * batch.num_graphs
 
-        # ── validate ──
+        train_loss /= len(train_ds)
+
+        # ── validate ────────────────────────────────────────────────────────
         model.eval()
         val_loss = 0.0
         y_true_v, y_pred_v = [], []
@@ -135,28 +172,40 @@ def train_one_fold(
                 y_true_v.extend(batch.y.cpu().numpy().tolist())
 
         val_loss /= len(val_ds)
+        val_acc   = accuracy_score(y_true_v, y_pred_v)
 
-        if verbose and epoch % 10 == 0:
-            acc = accuracy_score(y_true_v, y_pred_v)
-            print(f"  Epoch {epoch:3d} | val_loss={val_loss:.4f} | val_acc={acc:.3f}")
+        epoch_bar.set_postfix(
+            tr=f'{train_loss:.3f}',
+            vl=f'{val_loss:.3f}',
+            acc=f'{val_acc:.3f}',
+            p=f'{patience_counter}/{patience}',
+        )
 
-        # ── early stopping ──
-        if val_loss < best_val_loss - 1e-5:
+        # ── early stopping ──────────────────────────────────────────────────
+        # min_delta=1e-4: ignore improvements smaller than this to avoid
+        # patience firing on pure numerical jitter (1e-5 was too tight).
+        if val_loss < best_val_loss - 1e-4:
             best_val_loss    = val_loss
             patience_counter = 0
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.cpu().clone()
+                          for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                if verbose:
-                    print(f"  Early stop at epoch {epoch}.")
+                stopped_epoch = epoch
+                epoch_bar.close()
                 break
 
     # Restore best weights
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # ── final evaluation ──
+    stop_str = (f'early stop @ep{stopped_epoch}'
+                if stopped_epoch < epochs else f'completed {epochs} ep')
+    tqdm.write(f'    {pbar_desc} | {stop_str} | '
+               f'best_vl={best_val_loss:.4f} | [{device}]')
+
+    # ── final evaluation ────────────────────────────────────────────────────
     model.eval()
 
     def eval_loader(loader):
@@ -197,16 +246,16 @@ def cross_validate_subject(
     device:       Optional[str] = None,
     use_class_weights: bool = True,
     verbose:      bool = True,
+    subject_id:   str = '',
 ) -> dict:
     """
     Stratified K-Fold CV for one subject's graph list.
-
     Returns aggregated metrics dict with mean/std over folds.
     """
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    device = resolve_device(device)
+    skf    = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     fold_metrics = []
 
-    # Class weights for imbalance handling
     class_weights = None
     if use_class_weights:
         counts = np.bincount(labels, minlength=n_classes).astype(float)
@@ -215,9 +264,14 @@ def cross_validate_subject(
         w = w / w.sum() * n_classes
         class_weights = torch.tensor(w, dtype=torch.float32)
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(graphs, labels), 1):
-        if verbose:
-            print(f"  Fold {fold}/{n_splits}")
+    fold_bar = tqdm(
+        enumerate(skf.split(graphs, labels), 1),
+        total=n_splits,
+        desc=f'{subject_id} folds',
+        leave=True,
+    )
+
+    for fold, (train_idx, val_idx) in fold_bar:
         train_g = [graphs[i] for i in train_idx]
         val_g   = [graphs[i] for i in val_idx]
 
@@ -234,13 +288,15 @@ def cross_validate_subject(
             device=device,
             class_weights=class_weights,
             verbose=verbose,
+            pbar_desc=f'{subject_id} fold {fold}/{n_splits}',
         )
         fold_metrics.append(val_m)
-        if verbose:
-            print(f"    → acc={val_m['accuracy']:.3f} | κ={val_m['kappa']:.3f}")
+        fold_bar.set_postfix(
+            acc=f"{val_m['accuracy']:.3f}",
+            kappa=f"{val_m['kappa']:.3f}",
+        )
 
-    # Aggregate
-    keys = ['accuracy', 'balanced_accuracy', 'kappa', 'f1_macro']
+    keys   = ['accuracy', 'balanced_accuracy', 'kappa', 'f1_macro']
     result = {}
     for k in keys:
         vals = [m[k] for m in fold_metrics]
@@ -253,31 +309,33 @@ def cross_validate_subject(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Train on all data, evaluate on held-out test set (block-2 last trial)
+# Train on all data, evaluate on held-out test set
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_and_test(
-    train_graphs: list[Data],
-    test_graphs:  list[Data],
-    train_labels: np.ndarray,
-    model_kwargs: dict,
-    n_classes:    int,
-    epochs:       int = 150,
-    batch_size:   int = 32,
-    lr:           float = 1e-3,
-    weight_decay: float = 1e-4,
-    patience:     int = 30,
-    device:       Optional[str] = None,
+    train_graphs:  list[Data],
+    test_graphs:   list[Data],
+    train_labels:  np.ndarray,
+    model_kwargs:  dict,
+    n_classes:     int,
+    epochs:        int = 150,
+    batch_size:    int = 32,
+    lr:            float = 1e-3,
+    weight_decay:  float = 1e-4,
+    patience:      int = 30,
+    device:        Optional[str] = None,
     use_class_weights: bool = True,
-    verbose:      bool = True,
+    verbose:       bool = True,
+    subject_id:    str = '',
 ) -> tuple[EEGGraphNet, dict]:
     """
-    Train on full training set, report metrics on the dedicated test set.
-    Uses an 10% validation split (from training) for early stopping only.
+    Train on full training set, evaluate on dedicated test set.
+    Uses a stratified 10% val split for early stopping only.
     """
     from sklearn.model_selection import train_test_split
 
-    # Internal val split (stratified 10%) for early stopping
+    device = resolve_device(device)
+
     idx = np.arange(len(train_graphs))
     tr_idx, v_idx = train_test_split(idx, test_size=0.1,
                                      stratify=train_labels, random_state=42)
@@ -293,18 +351,23 @@ def train_and_test(
         class_weights = torch.tensor(w, dtype=torch.float32)
 
     model, _, _ = train_one_fold(
-        train_graphs=tr_g, val_graphs=v_g,
-        model_kwargs=model_kwargs, n_classes=n_classes,
-        epochs=epochs, batch_size=batch_size, lr=lr,
-        weight_decay=weight_decay, patience=patience,
-        device=device, class_weights=class_weights, verbose=verbose,
+        train_graphs=tr_g,
+        val_graphs=v_g,
+        model_kwargs=model_kwargs,
+        n_classes=n_classes,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        weight_decay=weight_decay,
+        patience=patience,
+        device=device,
+        class_weights=class_weights,
+        verbose=verbose,
+        pbar_desc=f'{subject_id}' if subject_id else 'Training',
     )
 
-    # Evaluate on held-out test set
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # ── test set evaluation ──────────────────────────────────────────────────
     model.eval().to(device)
-
     test_ds     = EEGGraphDataset(test_graphs)
     test_loader = DataLoader(test_ds, batch_size=batch_size,
                               shuffle=False, num_workers=0)
@@ -317,9 +380,12 @@ def train_and_test(
             y_true.extend(batch.y.cpu().numpy().tolist())
 
     test_metrics = compute_metrics(np.array(y_true), np.array(y_pred), n_classes)
-    if verbose:
-        print(f"  Test → acc={test_metrics['accuracy']:.3f} | "
-              f"κ={test_metrics['kappa']:.3f} | "
-              f"bal_acc={test_metrics['balanced_accuracy']:.3f}")
+
+    tqdm.write(
+        f'  ► {subject_id or "Subject"} TEST | '
+        f'acc={test_metrics["accuracy"]:.3f} | '
+        f'κ={test_metrics["kappa"]:.3f} | '
+        f'bal_acc={test_metrics["balanced_accuracy"]:.3f}'
+    )
 
     return model, test_metrics

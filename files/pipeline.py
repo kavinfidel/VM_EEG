@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 from typing import Literal, Optional
+from tqdm.auto import tqdm
 
 from features import (
     compute_classical_features,
@@ -27,6 +28,78 @@ from train import cross_validate_subject, train_and_test
 # ─────────────────────────────────────────────────────────────────────────────
 
 from dataclasses import dataclass, field
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Preprocessing integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_data_from_preprocessing(preproc_cfg) -> tuple[dict, dict, float, int]:
+    """
+    Runs the existing PreprocessingPipeline + load_all_subjects and returns
+    everything the GNN pipeline needs.
+
+    Args:
+        preproc_cfg : An ExperimentConfig instance (your existing dataclass).
+
+    Returns:
+        total_data  : dict  {subject_id: {'data': ndarray(N,C,T), 'labels': ndarray(N,)}}
+        test_data   : dict  {subject_id: {'data': ndarray(N,C,T), 'labels': ndarray(N,)}}
+        fs          : float  sampling frequency read directly from the MNE raw object
+        n_classes   : int    number of unique classes found across all subjects
+
+    Notes:
+        ─ fs is read from the MNE sfreq so it is never hardcoded.
+        ─ n_classes is inferred from label_dict so it matches your actual task.
+        ─ This function imports load_all_subjects at call-time so it doesn't
+          require the preprocessing module to be importable at module load.
+    """
+    # Import here so the GNN pipeline files can be used standalone too
+    try:
+        from preprocessing import load_all_subjects   # your file name here
+    except ImportError as e:
+        raise ImportError(
+            "Could not import 'load_all_subjects' from 'preprocessing.py'. "
+            "Make sure your preprocessing script is in the same directory or "
+            "on sys.path, and that the module is named 'preprocessing.py'.\n"
+            f"Original error: {e}"
+        )
+
+    print("=" * 60)
+    print("Running preprocessing pipeline …")
+    print("=" * 60)
+
+    total_data, test_data = load_all_subjects(preproc_cfg)
+
+    # ── Infer fs from config (sfreq is set there) ──────────────────────────
+    # preproc_cfg.fs is set in ExperimentConfig; fall back to 250 if absent.
+    fs = float(getattr(preproc_cfg, 'fs', 250.0))
+
+    # ── Infer n_classes from label_dict ────────────────────────────────────
+    # label_dict maps e.g. {'IMLH': 0, 'IMRH': 1, ...}
+    label_dict = getattr(preproc_cfg, 'label_dict', None)
+    if label_dict is not None:
+        n_classes = len(set(label_dict.values()))
+    else:
+        # Fall back: count unique labels in loaded data
+        all_labels = np.concatenate([
+            v['labels'] for v in total_data.values()
+        ])
+        n_classes = int(np.unique(all_labels).size)
+
+    # ── Sanity report ───────────────────────────────────────────────────────
+    print(f"\n✅ Preprocessing done.")
+    print(f"   Subjects      : {len(total_data)}")
+    print(f"   fs            : {fs} Hz")
+    print(f"   n_classes     : {n_classes}")
+    for sid, d in total_data.items():
+        tr_shape  = d['data'].shape
+        te_shape  = test_data[sid]['data'].shape if sid in test_data else "—"
+        ulabels, counts = np.unique(d['labels'], return_counts=True)
+        print(f"   {sid}: train={tr_shape}  test={te_shape}  "
+              f"classes={dict(zip(ulabels.tolist(), counts.tolist()))}")
+
+    return total_data, test_data, fs, n_classes
 
 
 @dataclass
@@ -45,7 +118,10 @@ class GNNConfig:
 
     # ── Graph construction ────────────────────────────────────────────────
     adj_method:         Literal['plv', 'pearson'] = 'plv'
-    adj_threshold:      float = 0.3
+    # PLV values for EEG rarely exceed 0.35 — keep threshold low (0.1–0.2).
+    # Using 0.5 (as before) will zero out nearly all edges → GNN collapses.
+    # Pearson can tolerate 0.3–0.5 since it reaches higher values.
+    adj_threshold:      float = 0.15
     keep_top_k_percent: Optional[float] = None   # e.g. 20.0 = top 20%
 
     # ── GNN model ─────────────────────────────────────────────────────────
@@ -68,7 +144,7 @@ class GNNConfig:
     use_class_weights: bool = True
 
     # ── Misc ──────────────────────────────────────────────────────────────
-    fs:      float = 500.0
+    fs:      float = 250.0
     device:  Optional[str] = None
     verbose: bool  = True
 
@@ -170,6 +246,7 @@ def run_subject_cv(
         adj_method=cfg.adj_method,
         threshold=cfg.adj_threshold,
         keep_top_k_percent=cfg.keep_top_k_percent,
+        verbose=cfg.verbose,
     )
 
     model_kwargs = build_model_kwargs(cfg, in_features)
@@ -188,6 +265,7 @@ def run_subject_cv(
         device=cfg.device,
         use_class_weights=cfg.use_class_weights,
         verbose=cfg.verbose,
+        subject_id=subject_id,
     )
 
     metrics['subject'] = subject_id
@@ -228,12 +306,14 @@ def run_subject_train_test(
         labels=train_labels,   fs=cfg.fs,
         adj_method=cfg.adj_method, threshold=cfg.adj_threshold,
         keep_top_k_percent=cfg.keep_top_k_percent,
+        verbose=cfg.verbose,
     )
     test_graphs = build_graphs_for_subject(
         windows=test_windows, node_features=test_feats,
         labels=test_labels,   fs=cfg.fs,
         adj_method=cfg.adj_method, threshold=cfg.adj_threshold,
         keep_top_k_percent=cfg.keep_top_k_percent,
+        verbose=cfg.verbose,
     )
 
     model_kwargs = build_model_kwargs(cfg, in_features)
@@ -252,6 +332,7 @@ def run_subject_train_test(
         device=cfg.device,
         use_class_weights=cfg.use_class_weights,
         verbose=cfg.verbose,
+        subject_id=subject_id,
     )
 
     test_metrics['subject'] = subject_id
@@ -281,7 +362,16 @@ def run_all_subjects(
     """
     all_results = {}
 
-    for subj, subj_data in total_data.items():
+    subject_bar = tqdm(
+        total_data.items(),
+        total=len(total_data),
+        desc='Subjects',
+        leave=True,
+        unit='subj',
+    )
+
+    for subj, subj_data in subject_bar:
+        subject_bar.set_description(f'Subject {subj}')
         windows = subj_data['data']    # (N, C, T)
         labels  = subj_data['labels']  # (N,)
 
@@ -312,6 +402,9 @@ def run_all_subjects(
             raise ValueError(f"mode must be 'cv' or 'train_test', got {mode!r}")
 
         all_results[subj] = metrics
+        subject_bar.set_postfix(last=subj)
+
+    subject_bar.close()
 
     # Summary across subjects
     key_map = {

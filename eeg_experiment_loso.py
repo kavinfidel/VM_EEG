@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore")
 @dataclass
 class ExperimentConfig:
     # ── Data paths ────────────────────────────────────────────────────────────
-    base_dir: str = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/Data"
+    base_dir: str = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/data_3"
 
     # ── Epoch / windowing ─────────────────────────────────────────────────────
     time_window: float = 0.5        # seconds per window
@@ -53,8 +53,8 @@ class ExperimentConfig:
     apply_ica: bool = True
     remove_muscle: bool = False
     ica_n_components: int = 25      # max ICA components (capped by rank)
-    ica_eog_threshold: float = 3.5  # z-score threshold for EOG rejection
-    ica_max_iter: int = 500
+    ica_eog_threshold: float = 2.6  # z-score threshold for EOG rejection
+    ica_max_iter: int = 200
 
     # ── EOG proxy channels ────────────────────────────────────────────────────
     eog_vertical_chs: Tuple[str, ...] = ('E14', 'E21')
@@ -64,7 +64,7 @@ class ExperimentConfig:
     active_channels: List[str] = field(default_factory=lambda: [
         'E24', 'E124', 'E36', 'E104', 'E47', 'E52', 'E60', 'E67', 'E72', 'E77',
         'E85', 'E92', 'E98', 'E62', 'E70', 'E75', 'E83', 'E58', 'E96', 'E90',
-        'E65', 'E69', 'E74', 'E82', 'E89', 'E1', 'E32', 'E14', 'E21'
+        'E65', 'E69', 'E74', 'E82', 'E89', 'E1', 'E32', 'E14', 'E21','E9','E22','E122','E33','E108','E100','E57'
     ])
     bad_channels: List[str] = field(default_factory=lambda: [
         'E17', 'E38', 'E94', 'E113', 'E119', 'E121', 'E125', 'E128',
@@ -148,9 +148,9 @@ class PreprocessingPipeline:
             raw.drop_channels(['VREF'])
 
         raw.pick('eeg')
-        # raw.pick_channels(cfg.active_channels)
-        if cfg.bad_channels:
-            raw.drop_channels([ch for ch in cfg.bad_channels if ch in raw.ch_names])        
+        raw.pick_channels(cfg.active_channels)
+        # if cfg.bad_channels:
+        #     raw.drop_channels([ch for ch in cfg.bad_channels if ch in raw.ch_names])        
 
         raw.notch_filter(freqs=cfg.notch_freq, picks='eeg', verbose=False, pad='edge')
         raw.filter(l_freq=1.0, h_freq=cfg.h_freq, picks='eeg', verbose=False, pad='edge')

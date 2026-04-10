@@ -23,6 +23,7 @@ from sklearn.model_selection import StratifiedKFold
 from xgboost import XGBClassifier
 from pyriemann.estimation import Covariances
 from pyriemann.tangentspace import TangentSpace
+from sklearn.preprocessing import StandardScaler
 
 mne.set_log_level('ERROR')
 warnings.filterwarnings("ignore")
@@ -35,13 +36,14 @@ warnings.filterwarnings("ignore")
 @dataclass
 class ExperimentConfig:
     # ── Data paths ────────────────────────────────────────────────────────────
-    base_dir: str = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/Data"
 
+    base_dir: str = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/data_3"
+   # base_dir: str = "Data"
     # ── Epoch / windowing ─────────────────────────────────────────────────────
     time_window: float = 0.5        # seconds per window
     overlap_factor: float = 0.75    # fraction of window to overlap (0 = no overlap)
     start_offset: float = 0.5       # seconds to trim from trial start
-    end_offset: float = 0.5         # seconds to trim from trial end
+    end_offset: float = 0.0         # seconds to trim from trial end
 
     # ── Signal processing ─────────────────────────────────────────────────────
     fs: float = 500.0               # sampling frequency (Hz)
@@ -53,8 +55,8 @@ class ExperimentConfig:
     apply_ica: bool = True
     remove_muscle: bool = False
     ica_n_components: int = 25      # max ICA components (capped by rank)
-    ica_eog_threshold: float = 3.5  # z-score threshold for EOG rejection
-    ica_max_iter: int = 500
+    ica_eog_threshold: float = 2.8  # z-score threshold for EOG rejection
+    ica_max_iter: int = 200
 
     # ── EOG proxy channels ────────────────────────────────────────────────────
     eog_vertical_chs: Tuple[str, ...] = ('E14', 'E21')
@@ -64,7 +66,7 @@ class ExperimentConfig:
     active_channels: List[str] = field(default_factory=lambda: [
         'E24', 'E124', 'E36', 'E104', 'E47', 'E52', 'E60', 'E67', 'E72', 'E77',
         'E85', 'E92', 'E98', 'E62', 'E70', 'E75', 'E83', 'E58', 'E96', 'E90',
-        'E65', 'E69', 'E74', 'E82', 'E89', 'E1', 'E32', 'E14', 'E21'
+        'E65', 'E69', 'E74', 'E82', 'E89', 'E1', 'E32', 'E14', 'E21','E9','E22','E122','E33','E108','E100','E57'
     ])
     bad_channels: List[str] = field(default_factory=lambda: [
         'E17', 'E38', 'E94', 'E113', 'E119', 'E121', 'E125', 'E128',
@@ -73,9 +75,10 @@ class ExperimentConfig:
     ])
 
     # ── Task / labels ─────────────────────────────────────────────────────────
-    classes: List[str] = field(default_factory=lambda: ['BA', 'BY', 'DO', 'MO', 'SI'])
+    classes: List[str] = field(default_factory=lambda: ['BA', 'BY', 'SI'])
     label_dict: Dict[str, int] = field(default_factory=lambda: {
-        'IMBA': 0, 'IMBY': 1, 'IMDO': 2, 'IMMO':3, 'IMSI': 4
+        # 'IMBA': 0, 'IMBY': 1, 'IMDO': 2, 'IMMO':3, 'IMSI': 4
+        'IMBA': 0, 'IMBY': 1, 'IMSI': 4
     })
 
     # ── Normalisation ─────────────────────────────────────────────────────────
@@ -107,7 +110,8 @@ class ExperimentConfig:
 
     # ── Output ────────────────────────────────────────────────────────────────
     save_confusion_matrices: bool = False
-    output_dir: str = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/confusion_matrices"
+    #output_dir: str = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/confusion_matrices"
+    output_dir: str = "confusion_matrices/"
     show_plots: bool = True
 
 
@@ -127,6 +131,67 @@ cfg = ExperimentConfig(
 
 )
 # 
+def get_symmetric_pairs(xml_path, tol=1e-3):
+    import xml.etree.ElementTree as ET
+    from collections import defaultdict
+
+    ns = {"ns": "http://www.egi.com/sensorLayout_mff"}
+
+    bad_channel = ['E17', 'E38', 'E94', 'E113', 'E119', 'E121', 'E125', 'E128', 'E73', 'E81', 'E88', 'E43', 'E44', 'E120', 'E114','E127', 'E126',
+                 'E68', 'E23', 'E3','E49','E48', 'E8', 'E25',
+    'E56', 'E63', 'E99', 'E107','E32','E1','E21','E14',]
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    sensors = []
+    for s in root.findall(".//ns:sensor", ns):
+        num = int(s.find("ns:number", ns).text)
+
+        # skip unwanted electrodes
+        if num > 128 or f"E{num}" in bad_channel:
+            continue
+
+        x = float(s.find("ns:x", ns).text)
+        y = float(s.find("ns:y", ns).text)
+        sensors.append((num, x, y))
+
+    midline = []
+    groups = defaultdict(list)
+
+    for num, x, y in sensors:
+        if abs(x) < tol:
+            midline.append('E'+str(num))
+        else:
+            key = (round(abs(x), 3), round(abs(y), 3))
+            groups[key].append((num, x, y))
+
+    pairs = []
+
+    for electrodes in groups.values():
+        used = set()
+        for i in range(len(electrodes)):
+            if i in used:
+                continue
+            for j in range(i + 1, len(electrodes)):
+                if j in used:
+                    continue
+
+                n1, x1, y1 = electrodes[i]
+                n2, x2, y2 = electrodes[j]
+
+                if abs(x1 + x2) < tol and abs(y1 - y2) < tol:
+                    pairs.append(('E'+str(n1), 'E'+str(n2)))
+                    used.add(i)
+                    used.add(j)
+                    break
+
+    return pairs, midline
+
+# Usage
+xml_path = "/Users/kavinfidel/Desktop/GNN+CNS+Hopf/CNS_Lab/VM_EEG/data_2/S2_/VI_S2_S1_B2_20251111_040016.mff/sensorLayout.xml"
+egi_pairs, midline_sensors = get_symmetric_pairs(xml_path)
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Preprocessing pipeline
@@ -149,7 +214,7 @@ class PreprocessingPipeline:
             raw.drop_channels(['VREF'])
 
         raw.pick('eeg')
-        # raw.pick_channels(cfg.active_channels)
+        #raw.pick_channels(cfg.active_channels)
         if cfg.bad_channels:
             raw.drop_channels([ch for ch in cfg.bad_channels if ch in raw.ch_names])        
 
@@ -245,11 +310,14 @@ class PreprocessingPipeline:
 
         if cfg.normalize:
             base_mean, base_std = self.baseline_stats()
-        #base_mean, base_std = 0, 1
+
+        else:
+            base_mean, base_std = 0, 1
         trial_groups = {cls: [] for cls in cfg.classes}
 
         window_samples = int(cfg.time_window * cfg.fs)
         step_samples   = max(1, int(window_samples * (1 - cfg.overlap_factor)))
+        current_chn = self.raw.ch_names
 
         for cls in cfg.classes:
             starts = [a['onset'] for a in self.annotations if a['description'] == f'IS{cls}']
@@ -276,7 +344,9 @@ class PreprocessingPipeline:
                     y = np.full(X.shape[0], cfg.label_dict[f'IM{cls}'])
                     trial_groups[cls].append((X, y))
 
-        return trial_groups
+        return trial_groups, current_chn
+    
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -312,7 +382,7 @@ def load_all_subjects(config: ExperimentConfig):
             print(f"  [{k}] {file_name}")
             try:
                 proc = PreprocessingPipeline(file_path, config)
-                trial_data = proc.extract_data()
+                trial_data, current_chn = proc.extract_data()
 
                 if k == 2:
                     print("  Splitting block 2 → last trial → test set")
@@ -334,6 +404,7 @@ def load_all_subjects(config: ExperimentConfig):
             total_data[subject] = {
                 'data':   np.concatenate(signals,      axis=0),
                 'labels': np.concatenate(labels,       axis=0),
+                'ch_names': current_chn ,
             }
         if signals_test:
             test_data[subject] = {
@@ -386,13 +457,64 @@ def riemannian_predict(X_train, y_train, X_test, clf_type: str, config: Experime
     cov = Covariances(estimator=config.cov_estimator)
     ts  = TangentSpace(metric=config.ts_metric)
 
+    scaler = StandardScaler()
+
+
     X_tr_ts = ts.fit_transform(cov.fit_transform(X_train))
     X_te_ts = ts.transform(cov.transform(X_test))
 
+    X_tr_ts = scaler.fit_transform(X_tr_ts)
+    X_te_ts = scaler.fit_transform(X_te_ts)
+ 
     clf = build_clf(clf_type, config)
     clf.fit(X_tr_ts, y_train)
     return clf.predict(X_te_ts)
 
+
+
+
+def compute_asymmetry(X, current_ch_names, pairs = egi_pairs, orphans = midline_sensors):
+    """
+    X: Data array of shape (trials, channels, time) -> e.g., (840, 100, 250)
+    current_ch_names: List of strings, the names of the channels currently in X.
+    pairs: List of tuples representing (Left_CH, Right_CH).
+    orphans: List of strings representing midline or unpaired channels.
+    """
+    left_indices = []
+    right_indices = []
+    new_feature_names = []
+
+    # --- 1. Find indices for Pairs ---
+    for left_ch, right_ch in pairs:
+        # Crucial: Only compute if BOTH channels survived preprocessing
+        if left_ch in current_ch_names and right_ch in current_ch_names:
+            left_indices.append(current_ch_names.index(left_ch))
+            right_indices.append(current_ch_names.index(right_ch))
+            new_feature_names.append(f"{left_ch}-{right_ch}")
+
+    # Vectorized subtraction for pairs
+    X_left = X[:, left_indices, :]
+    X_right = X[:, right_indices, :]
+    X_asym = X_left - X_right
+    
+
+    # --- 2. Find indices for Orphans / Midline ---
+    orphan_indices = []
+    for ch in orphans:
+        if ch in current_ch_names:
+            orphan_indices.append(current_ch_names.index(ch))
+            new_feature_names.append(ch)
+            
+    # --- 3. Combine them ---
+    if orphan_indices:
+        X_orphans = X[:, orphan_indices, :]
+        # Stack them along the channel axis (axis=1)
+        X_final = np.concatenate((X_asym, X_orphans), axis=1)
+    else:
+        X_final = X_asym
+
+    print(f"Reduced from {X.shape} channels to {X_final.shape} features.")
+    return X_final
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Evaluation 
@@ -415,6 +537,9 @@ def evaluate_all(train_dict, test_dict, config: ExperimentConfig):
             y_train = train_dict[subject]['labels']
             X_test  = test_dict[subject]['data']
             y_test  = test_dict[subject]['labels']
+            current_chn = train_dict[subject]['ch_names']
+           # X_train = compute_asymmetry(X = X_train, current_ch_names= current_chn)
+           # X_test = compute_asymmetry(X = X_test, current_ch_names= current_chn)
 
             print(f"  {subject} — train {len(X_train)} | test {len(X_test)}")
 

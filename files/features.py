@@ -91,8 +91,13 @@ def compute_classical_features(
     symmetric_pairs: Optional[list[tuple[int, int]]] = None,
 ) -> np.ndarray:
     """
-    Returns features of shape (N_windows, N_ch, F)
+    Returns z-score normalised features of shape (N_windows, N_ch, F)
     where F = 5 (DE) + 5 (RASM) + 3 (Hjorth) = 13.
+
+    All 13 features are globally z-scored across the N_windows dimension
+    per (channel, feature) so they have comparable scale entering the GNN.
+    Hjorth Activity in particular has very large raw values (EEG variance
+    units) that would dominate the first GNN layer without normalisation.
 
     symmetric_pairs: list of (left_idx, right_idx) channel index pairs
         used to compute RASM = DE_left - DE_right per band.
@@ -103,27 +108,23 @@ def compute_classical_features(
     F        = n_bands + n_bands + 3   # DE + RASM + Hjorth
     features = np.zeros((N, C, F), dtype=np.float32)
 
-    # Pre-build RASM lookup: channel → signed multiplier & partner index
-    rasm_partner = {}   # ch_idx → (partner_idx, sign)
+    # Pre-build RASM lookup
+    rasm_partner = {}
     if symmetric_pairs:
         for left, right in symmetric_pairs:
-            rasm_partner[left]  = (right, +1)   # left_DE  - right_DE
-            rasm_partner[right] = (left,  -1)   # right_DE - left_DE  (negative)
+            rasm_partner[left]  = (right, +1)
+            rasm_partner[right] = (left,  -1)
 
     for n in range(N):
-        # ---- PSD for all channels at once --------------------------------
         freqs, psd = welch(windows[n], fs=fs, nperseg=min(T, 256), axis=-1)
-        # psd: (C, n_freqs)
 
         de_matrix = np.zeros((C, n_bands), dtype=np.float32)
         for b_idx, (_, band) in enumerate(BANDS.items()):
             for c in range(C):
                 de_matrix[c, b_idx] = differential_entropy(psd[c], freqs, band)
 
-        # DE features [0:5]
         features[n, :, :n_bands] = de_matrix
 
-        # RASM features [5:10]
         for c in range(C):
             if c in rasm_partner:
                 partner, sign = rasm_partner[c]
@@ -131,14 +132,19 @@ def compute_classical_features(
                     de_matrix[c] - de_matrix[partner]
                 )
 
-        # Hjorth features [10:13]
         for c in range(C):
             act, mob, comp = hjorth_parameters(windows[n, c])
             features[n, c, n_bands * 2]     = act
             features[n, c, n_bands * 2 + 1] = mob
             features[n, c, n_bands * 2 + 2] = comp
 
-    return features   # (N, C, 13)
+    # ── Global z-score: normalise each (channel, feature) across N windows ──
+    # Shape (N, C, F) → mean/std over axis 0
+    feat_mean = features.mean(axis=0, keepdims=True)        # (1, C, F)
+    feat_std  = features.std(axis=0, keepdims=True) + 1e-8  # (1, C, F)
+    features  = (features - feat_mean) / feat_std
+
+    return features.astype(np.float32)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,10 +222,10 @@ class EEGChannelAutoencoder(nn.Module):
 
 def train_autoencoder(
     windows: np.ndarray,     # (N, C, T)
-    latent_dim: int = 16,
-    epochs: int = 200,
-    batch_size: int = 128,
-    lr: float = 1e-1,
+    latent_dim: int = 32,
+    epochs: int = 50,
+    batch_size: int = 512,
+    lr: float = 1e-3,
     device: Optional[str] = None,
     verbose: bool = True,
 ) -> EEGChannelAutoencoder:
@@ -228,27 +234,41 @@ def train_autoencoder(
     We flatten (N, C, T) → (N*C, 1, T) so the AE sees individual channels.
     Returns the trained model (encoder can be used for feature extraction).
     """
+    # Use the same resolve_device logic as train.py (CUDA > MPS > CPU)
     if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            device = 'cpu'
 
     N, C, T = windows.shape
     # Flatten channels into the batch dimension
     data = windows.reshape(N * C, 1, T).astype(np.float32)
 
-    # Z-score per sample to help convergence
+    # Z-score per sample — essential: raw EEG amplitudes vary hugely across
+    # channels and subjects. Without this the AE loss is dominated by scale,
+    # not shape, and the latents encode amplitude rather than dynamics.
     mu  = data.mean(axis=-1, keepdims=True)
     std = data.std(axis=-1, keepdims=True) + 1e-8
     data = (data - mu) / std
 
     tensor  = torch.from_numpy(data)
     dataset = TensorDataset(tensor)
+    # pin_memory only valid for CUDA
+    pin = (device == 'cuda')
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                         num_workers=0, pin_memory=(device == 'cuda'))
+                         num_workers=0, pin_memory=pin)
 
     model = EEGChannelAutoencoder(time_steps=T, latent_dim=latent_dim).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.MSELoss()
+
+    if verbose:
+        print(f"  AE: {N*C} samples ({N} windows × {C} channels) | "
+              f"latent_dim={latent_dim} | device={device}")
 
     model.train()
     for epoch in range(1, epochs + 1):
@@ -279,14 +299,22 @@ def extract_ae_features(
     device: Optional[str] = None,
 ) -> np.ndarray:
     """
-    Returns latent features of shape (N, C, latent_dim).
+    Returns z-score normalised latent features of shape (N, C, latent_dim).
+
+    Normalisation note: raw latents have arbitrary scale per dimension.
+    We z-score across the (N*C) sample dimension so every latent dimension
+    has zero mean and unit variance before entering the GNN. Without this
+    the GNN's first-layer BatchNorm sees inputs that are already near-constant
+    per feature, which causes it to collapse and output a single class.
     """
-    if device is None:
-        device = next(model.parameters()).device
+    # Resolve device from the model itself, or override with passed value
+    model_device = str(next(model.parameters()).device)
+    device = device if device is not None else model_device
     model.eval()
 
     N, C, T = windows.shape
     data = windows.reshape(N * C, 1, T).astype(np.float32)
+    # Apply the same per-sample z-score as during training
     mu   = data.mean(axis=-1, keepdims=True)
     std  = data.std(axis=-1, keepdims=True) + 1e-8
     data = (data - mu) / std
@@ -302,5 +330,13 @@ def extract_ae_features(
         _, z  = model(batch)
         latents.append(z.cpu().numpy())
 
-    latents = np.concatenate(latents, axis=0)          # (N*C, latent_dim)
-    return latents.reshape(N, C, -1).astype(np.float32) # (N, C, latent_dim)
+    latents = np.concatenate(latents, axis=0)           # (N*C, latent_dim)
+    latents = latents.reshape(N, C, -1).astype(np.float32)  # (N, C, latent_dim)
+
+    # ── Global z-score normalisation across all (N*C) samples per latent dim ──
+    # Shape: (N*C, latent_dim) → compute mean/std over axis 0
+    flat = latents.reshape(N * C, -1)                   # (N*C, latent_dim)
+    feat_mean = flat.mean(axis=0, keepdims=True)        # (1, latent_dim)
+    feat_std  = flat.std(axis=0, keepdims=True) + 1e-8  # (1, latent_dim)
+    flat_norm = (flat - feat_mean) / feat_std
+    return flat_norm.reshape(N, C, -1).astype(np.float32)
